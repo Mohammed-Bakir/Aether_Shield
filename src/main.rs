@@ -10,9 +10,6 @@ async fn main() {
     let socket = UdpSocket::bind("127.0.0.1:53").await.unwrap();
     println!("Successfully bound to local IPv4 loopback port 53!");
 
-    // Insert your target pen-test blocker domain
-    firewall.insert("abd-bakir.netlify.app");
-
     for line in text.lines() {
         if line.starts_with("0.0.0.0 ") {
             let line = &line[8..];
