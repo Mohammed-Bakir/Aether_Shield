@@ -25,46 +25,48 @@ async fn main() {
         let mut alloc = [0u8; 512];
         
         if let Ok((bytes_received, source_address)) = socket.recv_from(&mut alloc).await {
-            // ⏳ Start the timer as soon as the raw bytes land in memory
-            let packet_start = std::time::Instant::now();
-
             let mut website_name = String::new();
             let mut index = 12;
 
             while index < bytes_received {
-                let length = alloc[index] as usize;
+                // 🛡️ SAFE BOUNDARY 1: Safely read the length byte without risking an out-of-bounds panic
+                let length = match alloc.get(index) {
+                    Some(&len) => len as usize,
+                    None => break, // Index went past the received bytes; abort parsing cleanly
+                };
+
                 if length == 0 {
                     break;
                 }
                 index += 1;
 
+                // 🛡️ SAFE BOUNDARY 2: Ensure the segment window fits inside the bytes we actually received
                 if index + length <= bytes_received {
-                    if let Ok(part) = std::str::from_utf8(&alloc[index..index + length]) {
-                        if !website_name.is_empty() {
-                            website_name.push('.');
+                    // 🛡️ SAFE BOUNDARY 3: Grab the slice window safely using .get()
+                    if let Some(raw_bytes) = alloc.get(index..index + length) {
+                        if let Ok(part) = std::str::from_utf8(raw_bytes) {
+                            if !website_name.is_empty() {
+                                website_name.push('.');
+                            }
+                            website_name.push_str(part);
                         }
-                        website_name.push_str(part);
                     }
+                } else {
+                    break; // Packet layout is malformed; drop out of parsing safely
                 }
+
                 index += length;
             }
 
+            // Skip empty or corrupted non-DNS queries
             if website_name.is_empty() {
-                continue; // Skip malformed non-DNS queries
+                continue;
             }
 
-            // ⏱️ Track exactly how long the Trie lookup takes
-            let trie_start = std::time::Instant::now();
-            let is_blocked = firewall.contains(&website_name);
-            let trie_duration = trie_start.elapsed();
-
-            if is_blocked {
-                 let total_duration = packet_start.elapsed();
-                 println!(
-                     "[❌ DROPPED] {} | Trie Match: {:?} | Total Handle Time: {:?}", 
-                     website_name, trie_duration, total_duration
-                 );
-                 // Packet dropped cleanly by skipping forwarding
+            // --- THE CLEAN DECISION CORE ---
+            if firewall.contains(&website_name) {
+                 // Drop the packet cleanly!
+                 continue; 
             } else {
                 // Open a standard, highly compatible IPv4 outbound socket handler
                 let temp_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
@@ -73,13 +75,8 @@ async fn main() {
                 let mut response_alloc = [0u8; 512];
                 let (response_bytes, _) = temp_socket.recv_from(&mut response_alloc).await.unwrap();
 
+                // Relay the exact response slice straight back to your original source endpoint
                 socket.send_to(&response_alloc[..response_bytes], source_address).await.unwrap();
-
-                let total_duration = packet_start.elapsed();
-                println!(
-                    "[✅ ALLOWED] {} | Trie Match: {:?} | Proxy Latency: {:?}", 
-                    website_name, trie_duration, total_duration
-                );
             }
         }
     }
